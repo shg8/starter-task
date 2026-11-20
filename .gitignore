@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+*.json
+*.ncu-rep
+*.nsys-rep
+.venv/
