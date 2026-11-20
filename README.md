@@ -1,13 +1,10 @@
-# Starter task: speed up a mixture-of-experts kernel on an H200
+# Starter Task
 
-**Duration:** two weeks. **Budget:** $1,000 of Claude credits and one H200 GPU.
-**Start / final walkthrough:** `TODO: dates`. **Contact:** `TODO`.
-
-Over two weeks you will take one production GPU kernel, have coding agents make it faster in three steps, and
-come out understanding how each version works. The agents write all the code. Your part is to run the loop:
-decide what to try, have the agent measure it, check what it tells you, and understand the result. No GPU
-performance background is assumed; picking it up is the point. By the end you should know this kernel well,
-and know exactly where your understanding stops.
+Over two weeks you will take one production GPU kernel, have coding agents make it faster, and
+reach an understanding of how your agents improved the kernel. The agents should write all the code. Your part is to steer and understand:
+decide what to try, have to profile it, check what the agent tells you, and understand the result. No GPU
+performance background is assumed, and we'd like to see how quickly you can pick up new concepts. By the end you should know this kernel well,
+and know the limitations of your understanding.
 
 ## The kernel
 
@@ -30,7 +27,7 @@ for t, (e, g) in routes if e is local:       # token t, expert e, routing weight
     out[t] += g * rmsnorm(y)                  # eps = 1e-8, no weight of its own
 ```
 
-**Inputs, new on every call**
+**Inputs**
 
 | Name | Type and shape | Meaning |
 |---|---|---|
@@ -111,22 +108,6 @@ For scale: SGLang's own kernel is at about 0.5% on these tests and the starting 
 - **Hands off the judge.** The submission does not touch timing, import the reference, start processes or use
   the network.
 
-## What you get
-
-- **A starter repo.** https://github.com/shg8/starter-task
-  - `submission.py`: a correct but slow PyTorch version to start from, and the file you edit. It defines
-    `prepare(weights)` and `kernel_fn(data, state)`, with typed definitions of the weights, inputs and config.
-  - `baseline.py`: SGLang's kernel, as the judge calls it.
-  - `nvfp4.py`: the weight format. `problem.py`: shapes, weight and input generation, the FP32 reference,
-    the correctness checks and the floor.
-  - `judge.py`, the judge: it runs the tests, then the timing described above, and prints a per-size table and
-    a score with its interval. Its `--profile` and `--ncu` modes run one batch size under a profiler.
-  - `run.sh`: runs the judge in the SGLang container with docker.
-- **An H200** with the SGLang container image. `TODO: how to log in and run the judge`
-- **$1,000 of Claude credits.**
-
-There is no reference solution in the repo.
-
 ### Running the judge
 
 Everything runs inside the public SGLang v0.5.23 image,
@@ -167,7 +148,7 @@ prepared state and the CUDA graphs).
 When the judge is run with SGLang's kernel on both sides, every size reads 1.00 within its interval; in two
 runs SGLang's times agreed to within 1%.
 
-**Nsight Compute.** `ncu` is in the image (`/usr/local/cuda/bin/ncu`). The `--ncu M` mode runs a few calls of
+**Nsight Compute.** The `--ncu M` mode runs a few calls of
 one batch size between `cudaProfilerStart` and `cudaProfilerStop`, so profile it with
 `--profile-from-start off`:
 
@@ -181,38 +162,30 @@ setting `NVreg_RestrictProfilingToAdminUsers=0`). If it reports `Failed to lock 
 `--clock-control none`; durations are then measured at the GPU's normal boost clocks rather than locked base
 clocks. Use `-k regex:<name>` to profile only your own kernel.
 
-## What to bring to the end
+## Deliverables
 
-1. **By the end of day 2: a one-page note on the measurement.**
+1. **Notes on how to measure performance accurately.**
    - What the judge measures, in your own words, and why it replays CUDA graphs and clears the L2 cache.
    - The SGLang times above, reproduced on your machine.
-   - The 1-token floor derived by hand: which bytes must be read, and how many.
+   - The 1-token floor (elaborate this or find a tutorial on calculating the theoretical upper bound) derived by hand: which bytes must be read, and how many.
    - One naive timing of your own (a Python loop around the call) and why it disagrees with the judge.
-2. **Three checkpoints** along the optimization path. Each is a git tag whose `submission.py` passes every
+2. **Two checkpoints** along the optimization path. Each is a git tag whose `submission.py` passes every
    test, and each rests on a different idea, not a retuned constant. For each, at most one page:
    - what changed;
    - why it is faster, in terms of what the hardware is doing;
    - one profiler number that moved, before and after;
-   - what limits the kernel now, and how far it is from the floor;
-   - one claim your agent made that you checked yourself, and what you found;
+   - what limits the kernel now, and how far it is from the theoretical limit;
    - which parts of the kernel you can explain line by line, and which you can't.
 3. **`UNKNOWNS.md`:** everything in the code or the profiler output that you do not understand. Be specific:
-   "I don't know why 8 warps per SM beat 16 here", not "I don't fully get occupancy".
-4. **A spend line:** credits and GPU hours used.
-5. **A 45-minute walkthrough** of your final kernel and your notes.
+   "I don't know why 8 warps per SM beat 16 here".
+4. **A 30-minute walkthrough** of your final kernel and your notes.
 
 ## How to work
-
-- **Agents write the code; you own it.** In the walkthrough it is your kernel.
 - **It is fine not to understand a part.** Write it down in `UNKNOWNS.md`. The parts you do understand should
   be solid enough to go through line by line. "I don't know; here is how I would find out" is a good answer.
 - **A kernel you can mostly explain beats a faster one you can't.** You choose how far to let the agent go.
-- **An agent's explanation is a hypothesis until you have checked it.** Agents misread profiles and report
-  gains that are noise. Keep what you measured apart from what you were told.
-- **Report scores with their interval.** A gain inside the interval is not a gain.
-- **The budget is fixed.** Plan so the credits and the GPU time last the two weeks.
-- **Questions about access or logistics:** any time. **Technical questions:** try to work them out yourself
-  first. There is a 15-minute check-in at the end of week 1 for anything you are stuck on.
+- **Consider noise in your profiling and do repeated measurements.**
+- **Questions about compute access or logistics:** any time.
 
 ## A suggested pace
 
@@ -220,27 +193,25 @@ clocks. Use `-k regex:<name>` to profile only your own kernel.
 |---|---|
 | 1–2 | Run the judge on the starting submission and the baseline. Write the measurement note. |
 | 3–5 | First CUDA kernel that passes the tests. Profile it and SGLang's. Checkpoint 1. |
-| 6–8 | Find what limits checkpoint 1 and remove it. Checkpoint 2. |
-| 9 | Checkpoint 3. Stop changing code. |
-| 10 | Write-up, `UNKNOWNS.md`, walkthrough. |
+| 6–10 | Find what limits checkpoint 1 and improve it -> Checkpoint 2. |
+| 11-12 | Write-up |
 
 This is a guide, not a requirement. How you get to three checkpoints is yours to decide.
 
 ## What a good two weeks looks like
 
-The score matters least. Roughly in order of importance:
+Roughly in order of importance:
 
-1. **You understand your kernel.** You can say what each checkpoint does on the hardware and what limits it,
+1. **You understand your kernel.** You can walk through the kernel code of the three checkpoints and explain what it does and what limits it,
    and you know where your understanding stops.
-2. **You ran the project yourself.** You scoped the work, dropped dead ends, caught your agent's mistakes,
-   stayed inside the budget, and finished.
-3. **You moved a long way from day 1,** in ideas as much as in microseconds.
+2. **You learned how to profile kernels.**
+3. **You can characterize how agents approach hyperoptimizing kernels and have thoughts on their strengths and weaknesses.**
 4. **The kernel got faster.**
 
-## What you will probably need to learn
+## Questions about GPU architecture
 
-Not all of GPU architecture: only the parts your kernel touches. By the walkthrough you should be able to
-answer most of these for your own code:
+You probably have to pick up a little GPU programming knowledge for this task. By the walkthrough you should be able to
+answer some of these for your own code. It's much better to be able to explain a few of these in-depth rather than all of them superficially.
 
 - How a kernel launch maps onto the GPU: grids, blocks, threads, warps, and how many run at once on one SM.
 - Where data lives: registers, shared memory, the L2 cache, HBM. What it costs to move between them.
