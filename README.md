@@ -1,25 +1,23 @@
 # Starter Task
 
-Over two weeks you will take one production GPU kernel, have coding agents make it faster, and
-reach an understanding of how your agents improved the kernel. The agents should write all the code. Your part is to steer and understand:
-decide what to try, have to profile it, check what the agent tells you, and understand the result. No GPU
-performance background is assumed, and we'd like to see how quickly you can pick up new concepts. By the end you should know this kernel well,
-and know the limitations of your understanding.
+Over two weeks, use coding agents to optimize a production GPU kernel. Have the agents
+write the code while you choose what to try, direct the profiling, and verify their
+explanations. By the walkthrough, you should be able to explain how your kernel works,
+what limits its performance, and where your understanding stops. You can start without
+a GPU performance background.
 
 ## The kernel
 
-The expert block of a mixture-of-experts language model (Muse Spark Open), as the
-[SGLang](https://github.com/sgl-project/sglang) inference server runs it on one of eight H200s. SGLang's own
-implementation is the baseline you are timed against:
-
-- the layer, [`MuseSpark1xFp4Experts._forward_marlin`](https://github.com/sgl-project/sglang/blob/297e54fd105e974cdf401e5b4d20253a22c16f90/python/sglang/srt/layers/muse_spark/muse_spark_fp4_moe.py#L520);
-- the CUDA kernel under it, [`marlin_moe/marlin_template.h`](https://github.com/sgl-project/sglang/blob/297e54fd105e974cdf401e5b4d20253a22c16f90/python/sglang/kernels/jit/csrc/gemm/marlin_moe/marlin_template.h).
+You'll optimize the NVFP4 expert block in Muse Spark Open, a mixture-of-experts
+language model. The judge runs the work for one of eight expert shards on a single
+B200, without the cross-GPU reduction. The baseline calls SGLang's Marlin W4A16
+implementation. [SGLang layer](https://github.com/sgl-project/sglang/blob/297e54fd105e974cdf401e5b4d20253a22c16f90/python/sglang/srt/layers/muse_spark/muse_spark_fp4_moe.py#L520) · [Marlin CUDA kernel](https://github.com/sgl-project/sglang/blob/297e54fd105e974cdf401e5b4d20253a22c16f90/python/sglang/kernels/jit/csrc/gemm/marlin_moe/marlin_template.h)
 
 Each token is routed to 8 of the model's 256 experts. This GPU holds 32 of them and computes only the routes
 that land on its own experts:
 
 ```python
-for t, (e, g) in routes if e is local:       # token t, expert e, routing weight g
+for t, e, g in local_routes:               # token, expert, routing weight
     h = x[t] @ dequant(w13[e]).T              # 4,096 -> 8,192
     gate, up = split(h)
     y = (silu(gate) * up) @ dequant(w2[e]).T  # 4,096 -> 4,096
@@ -58,23 +56,31 @@ The output is bfloat16 [M, 4096]. A token with no local expert gets a row of zer
   timed GPU holds experts 96–127; the tests use other groups too.
 - **Routing is skewed,** as real routers are, and every test case makes this GPU the busiest of the eight.
 
-**Batch sizes and the baseline**
+### Batch sizes and performance floor
 
-M is 1, 8, 16, 32, 128 or 256 tokens. The floor is the time to read the data the step needs at 4.8 TB/s or do
-its arithmetic at 989 TFLOP/s, whichever is longer: the codes and scales of every local expert that receives
-at least one route, plus the activations. SGLang's times were measured with the judge in the repo on one H200
-(median over 100 timed calls per size; the floor is the median over the same calls).
+The judge times batches of 1, 8, 16, 32, 128, and 256 tokens. For each input,
+it estimates a floor as the larger of two times:
 
-| Tokens | SGLang | Floor | SGLang / floor | Local routes | Local experts used |
-|---|---|---|---|---|---|
-| 1 | 55.8 µs | 11.8 µs | 4.6× | 2 | 2 |
-| 8 | 123.9 µs | 53.1 µs | 2.4× | 14 | 9 |
-| 16 | 165.7 µs | 70.8 µs | 2.2× | 25 | 12 |
-| 32 | 219.5 µs | 100.4 µs | 2.3× | 49 | 17 |
-| 128 | 588.6 µs | 171.5 µs | 3.5× | 193 | 29 |
-| 256 | 814.7 µs | 183.7 µs | 4.4× | 384 | 31 |
+- **Memory.** Divide the bytes for the active local experts' NVFP4 codes and scales, input and output activations, and routing data by 8 TB/s.
+- **Compute.** Divide the FLOPs for both projections across all local routes by 2.25 PFLOP/s, the B200's peak dense BF16 Tensor Core rate. This models the W4A16 baseline's arithmetic.
 
-The score is the geometric mean, over the six batch sizes, of SGLang's time divided by yours.
+These ceilings are per GPU. [NVIDIA B200 bandwidth](https://docs.nvidia.com/enterprise-reference-architectures/hgx-ai-factory-h100-h200-b200/latest/components.html) · [NVIDIA HGX B200 Tensor Core specifications](https://www.nvidia.com/en-us/data-center/hgx/)
+
+Slurm job 24601 measured the starting `submission.py` against SGLang on one B200
+on Cayenne. The table shows medians from 100 timed pairs per size. The SGLang/floor
+column uses the median of the per-pair ratios.
+
+| Tokens | SGLang (µs) | Starter (µs) | B200 floor (µs) | SGLang / floor | Local routes | Local experts used |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 59.4 | 27690.0 | 7.1 | 8.09× | 2 | 2 |
+| 8 | 114.7 | 27845.6 | 31.9 | 3.60× | 14 | 9 |
+| 16 | 151.5 | 28122.3 | 42.5 | 3.51× | 25 | 12 |
+| 32 | 209.0 | 28105.1 | 60.2 | 3.50× | 49 | 17 |
+| 128 | 537.6 | 28366.3 | 102.9 | 5.32× | 193 | 29 |
+| 256 | 744.9 | 28998.1 | 110.2 | 6.72× | 383.5 | 31 |
+
+The score is the geometric mean of the six per-size speedups. The starter scored
+0.007× with a 95% interval of [0.007, 0.008].
 
 **Correctness**
 
@@ -85,16 +91,13 @@ The score is the geometric mean, over the six batch sizes, of SGLang's time divi
   calls `kernel_fn` directly, then captures it as a CUDA graph and replays it on two new inputs. Every 4th
   timed call (and the first) is checked as well.
 
-For scale: SGLang's own kernel is at about 0.5% on these tests and the starting `submission.py` at about
-0.4%. Accumulating the first projection in bfloat16 instead of FP32 gives about 2.8% and fails.
-
 **How a kernel is timed**
 
 - Each batch size is captured as a CUDA graph and timed by replaying it.
 - Every replay starts with a cold L2 cache (the judge reads a 512 MiB buffer first).
 - Your replays and SGLang's take turns on the same fresh inputs, on the same GPU, each side in its own
   process. The speedup is the median of the paired ratios, reported with a 95% interval of at least ±1.5%.
-- A graph replay's fixed cost, about 5.6 µs, is subtracted from both sides.
+- The judge measures each process's fixed graph replay overhead and subtracts it from its timings.
 
 **Constraints**
 
@@ -108,69 +111,65 @@ For scale: SGLang's own kernel is at about 0.5% on these tests and the starting 
 - **Hands off the judge.** The submission does not touch timing, import the reference, start processes or use
   the network.
 
-### Running the judge
+## Run the judge on Cayenne
 
-Everything runs inside the public SGLang v0.5.23 image,
-`lmsysorg/sglang@sha256:f832b5c39559c9caa900b22ad37c76fcce66470676855c42052102c537812f1f`
-(SGLang's source is at `/sgl-workspace/sglang` inside it). On a machine with an H200, docker and the NVIDIA
-Container Toolkit, `./run.sh` starts it with this repo mounted at `/work`; if you are already inside the
-container, call `python3 judge.py` directly.
+From the repository root, check the queue and submit a job for one B200.
+The first run may need to pull the container image and compile SGLang's kernels.
 
 ```bash
-./run.sh submission.py --tests-only          # the five tests only (about 10 s)
-./run.sh submission.py                       # tests, then timing at all six sizes
-./run.sh submission.py --sizes 1,8           # timing at some sizes only
-./run.sh submission.py --repeats 200         # exactly 200 timed pairs per size
-./run.sh submission.py --json results.json   # also write every timed pair as JSON
-./run.sh mine.py --baseline other.py         # time two of your own files against each other
-./run.sh submission.py --profile 8           # torch profiler table for M=8 (eager calls, warm L2)
+slurm-windows
+sbatch --partition=main --gres=gpu:1 --time=00:20:00 \
+    --wrap='./run.sh submission.py --repeats 100 --json b200-results.json'
+squeue -u "$USER"
 ```
 
-The output ends with a table like this (the starting `submission.py`):
+Slurm writes the judge's output to `slurm-<job-id>.out`. The JSON file includes
+every timed pair. To reproduce the baseline on both sides, use
+`./run.sh baseline.py --repeats 100` as the batch command.
 
-```
-tokens   SGLang us   yours us  speedup      95% interval  floor us yours/floor  pairs
-     1        56.2    41744.5    0.001    [0.001, 0.001]      11.8    3533.93x    400
-     8       123.4    41932.0    0.003    [0.003, 0.003]      53.1     790.10x    400
-  ...
-   256       811.4    43434.5    0.019    [0.018, 0.019]     183.7     236.26x    400
+The launcher mounts the repository at `/work` in the pinned SGLang v0.5.23 image,
+`lmsysorg/sglang@sha256:f832b5c39559c9caa900b22ad37c76fcce66470676855c42052102c537812f1f`.
+The container gets its GPU from the Slurm allocation. JIT caches persist under
+`${XDG_CACHE_HOME:-$HOME/.cache}/starter-task`. Inside the container, you can
+call `python3 judge.py` directly.
 
-score (geometric mean of speedups): 0.005  95% interval [0.005, 0.005]
-```
-
-The number of timed pairs per size adapts: at least 100, then more until the size's interval is within ±0.5%,
-up to 400 pairs or 40 s per size. A full run of SGLang against itself takes about 50 s; a full run of the
-starting `submission.py` about 160 s (the first run in a fresh container adds a few minutes of compiling
-SGLang's kernels; `run.sh` keeps the compiled kernels in `~/.cache/starter-task`). A full run uses up to
-44 GB of GPU memory: each side's process holds about 23 GB (the weights, the copy handed to `prepare`, the
-prepared state and the CUDA graphs).
-
-When the judge is run with SGLang's kernel on both sides, every size reads 1.00 within its interval; in two
-runs SGLang's times agreed to within 1%.
-
-**Nsight Compute.** The `--ncu M` mode runs a few calls of
-one batch size between `cudaProfilerStart` and `cudaProfilerStop`, so profile it with
-`--profile-from-start off`:
+Change the command inside `--wrap` to run a shorter check, compare two implementations,
+or collect a profile.
 
 ```bash
-DOCKER_ARGS=--cap-add=SYS_ADMIN ./run.sh --exec ncu --profile-from-start off --set full \
+./run.sh submission.py --tests-only
+./run.sh submission.py --sizes 1,8
+./run.sh mine.py --baseline other.py
+./run.sh submission.py --profile 8
+```
+
+By default, the judge starts checking for convergence after 100 timed pairs per
+size. It aims for a bootstrap interval within ±0.5% and stops at 400 pairs or
+once it reaches the 40-second timing budget. Use `--repeats` to set a fixed pair count.
+
+### Profile with Nsight Compute
+
+Inside a one-GPU allocation, run:
+
+```bash
+./run.sh --exec ncu --profile-from-start off --set full \
     -o prof python3 judge.py submission.py --ncu 8 --iters 1
 ```
 
-Inside a container, `ncu` needs access to the GPU's performance counters (`--cap-add=SYS_ADMIN`, or the host
-setting `NVreg_RestrictProfilingToAdminUsers=0`). If it reports `Failed to lock GPU clock frequencies`, add
-`--clock-control none`; durations are then measured at the GPU's normal boost clocks rather than locked base
-clocks. Use `-k regex:<name>` to profile only your own kernel.
+The judge brackets the selected calls with `cudaProfilerStart` and
+`cudaProfilerStop`. Nsight Compute needs access to GPU performance counters.
+If clock locking fails, add `--clock-control none` to profile at normal boost
+clocks. Use `-k regex:<name>` to limit collection to your kernel.
 
 ## Deliverables
 
 1. **Notes on how to measure performance accurately.**
    - What the judge measures, in your own words, and why it replays CUDA graphs and clears the L2 cache.
-   - The SGLang times above, reproduced on your machine.
-   - The 1-token floor (elaborate this or find a tutorial on calculating the theoretical upper bound) derived by hand: which bytes must be read, and how many.
+   - The SGLang timings above, reproduced on your machine.
+   - A hand calculation of the 1-token floor, with a byte count for each input and output in the model.
    - One naive timing of your own (a Python loop around the call) and why it disagrees with the judge.
 2. **Two checkpoints** along the optimization path. Each is a git tag whose `submission.py` passes every
-   test, and each rests on a different idea, not a retuned constant. For each, at most one page:
+   test, and each tests a distinct optimization idea. Use at most one page per checkpoint to cover the following.
    - what changed;
    - why it is faster, in terms of what the hardware is doing;
    - one profiler number that moved, before and after;
@@ -181,6 +180,7 @@ clocks. Use `-k regex:<name>` to profile only your own kernel.
 4. **A 30-minute walkthrough** of your final kernel and your notes.
 
 ## How to work
+
 - **It is fine not to understand a part.** Write it down in `UNKNOWNS.md`. The parts you do understand should
   be solid enough to go through line by line. "I don't know; here is how I would find out" is a good answer.
 - **A kernel you can mostly explain beats a faster one you can't.** You choose how far to let the agent go.
@@ -196,13 +196,13 @@ clocks. Use `-k regex:<name>` to profile only your own kernel.
 | 6–10 | Find what limits checkpoint 1 and improve it -> Checkpoint 2. |
 | 11-12 | Write-up |
 
-This is a guide, not a requirement. How you get to three checkpoints is yours to decide.
+Adjust the schedule as you learn what limits the kernel.
 
 ## What a good two weeks looks like
 
 Roughly in order of importance:
 
-1. **You understand your kernel.** You can walk through the kernel code of the three checkpoints and explain what it does and what limits it,
+1. **You understand your kernel.** You can walk through the kernel code at both checkpoints and explain what it does and what limits it,
    and you know where your understanding stops.
 2. **You learned how to profile kernels.**
 3. **You can characterize how agents approach hyperoptimizing kernels and have thoughts on their strengths and weaknesses.**
@@ -215,7 +215,7 @@ answer some of these for your own code. It's much better to be able to explain a
 
 - How a kernel launch maps onto the GPU: grids, blocks, threads, warps, and how many run at once on one SM.
 - Where data lives: registers, shared memory, the L2 cache, HBM. What it costs to move between them.
-- Which weight bytes one step has to read, and what a kernel must do to read them at close to 4.8 TB/s.
+- Which weight bytes one step has to read, and what a kernel must do to read them at close to 8 TB/s.
 - How a 4-bit weight becomes a number, and what that costs in instructions per byte.
 - Why `prepare()` may repack the weights, and what a different layout changes.
 - Why the sums are accumulated in FP32 when the inputs and outputs are bfloat16.

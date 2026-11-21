@@ -1,4 +1,4 @@
-"""Baseline: SGLang's NVFP4 MoE expert block on Hopper (the Marlin W4A16 path).
+"""Baseline: SGLang's NVFP4 MoE expert block (the Marlin W4A16 path).
 
 This file is thin glue around SGLang (https://github.com/sgl-project/sglang), which is licensed
 under the Apache License 2.0. Every kernel it runs belongs to SGLang. It reproduces what

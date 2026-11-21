@@ -39,8 +39,8 @@ ROW_FACTOR = 5.0               # no row more than 5x over the bound
 NEAR_ZERO_ROW = 0.1            # a row's error is measured against max(|ref row|, 0.1 * mean |ref row|)
 
 # Floor model
-HBM_BYTES_PER_S = 4.8e12
-TENSOR_FLOPS = 989e12
+HBM_BYTES_PER_S = 8.0e12
+TENSOR_FLOPS = 2.25e15
 EXPERT_BYTES = (2 * INTER * HIDDEN // 2 + 2 * INTER * HIDDEN // 16      # w13 codes + block scales
                 + HIDDEN * INTER // 2 + HIDDEN * INTER // 16             # w2 codes + block scales
                 + 2 * 4)                                                  # two global scales
@@ -204,8 +204,8 @@ def check(out, ref: torch.Tensor) -> tuple[bool, str, dict]:
 
 
 def floor(data: dict) -> dict:
-    """Lower bound on the step's time: bytes it must move at 4.8 TB/s or its arithmetic at
-    989 TFLOP/s, whichever is longer.
+    """Lower bound on the step's time: bytes it must move at 8 TB/s or its arithmetic at
+    2.25 PFLOP/s (dense BF16), whichever is longer.
 
     Bytes: codes, block scales and global scales of every local expert with at least one route,
     plus the activations (hidden_states in, routing in, output out). Arithmetic: two GEMMs per
