@@ -1,4 +1,4 @@
-"""The file you edit: the expert block of the MoE layer for one GPU.
+r"""The file you edit: the expert block of the MoE layer for one GPU.
 
 The judge calls
     state = prepare(weights)          once, untimed, at most 300 s
@@ -13,6 +13,76 @@ from the inputs is kept between calls; the weights stay 4-bit (prepare may repac
 losslessly); activations stay bfloat16 where SGLang keeps them bfloat16; CUDA C++ goes in this
 file and is built with torch.utils.cpp_extension.load_inline; the file does not import the judge
 or the reference, start processes or use the network.
+
+Adding a CUDA C++ kernel
+-----------------------
+Start by replacing the routing-weight calculation for one expert. The example
+below assigns one CUDA thread per token and sums the weights of its matching
+routes. Copy the helper into this file, add
+`state["cuda_ops"] = _build_cuda_ops()` before returning from prepare(), and
+replace the line that assigns `g` in kernel_fn() with
+`g = state["cuda_ops"].route_weights(ids.contiguous(), tw.contiguous(), e)`.
+
+    def _build_cuda_ops():
+        from torch.utils.cpp_extension import load_inline
+
+        # load_inline generates the Python binding from this declaration.
+        cpp = "at::Tensor route_weights(at::Tensor ids, at::Tensor weights, int64_t expert);"
+        cuda = r'''
+        #include <c10/cuda/CUDAGuard.h>
+        #include <c10/cuda/CUDAException.h>
+        #include <c10/cuda/CUDAStream.h>
+
+        __global__ void route_weights_kernel(
+            const int32_t* ids, const float* weights, float* out,
+            int64_t tokens, int64_t top_k, int64_t expert) {
+            const int64_t token = int64_t(blockIdx.x) * blockDim.x + threadIdx.x;
+            if (token >= tokens) return;
+            float sum = 0.0f;
+            for (int64_t slot = 0; slot < top_k; ++slot) {
+                const int64_t index = token * top_k + slot;
+                if (ids[index] == expert) sum += weights[index];
+            }
+            out[token] = sum;
+        }
+
+        // Inputs are contiguous CUDA tensors on the same device, as passed above.
+        at::Tensor route_weights(at::Tensor ids, at::Tensor weights, int64_t expert) {
+            const c10::cuda::CUDAGuard guard(ids.device());
+            const int64_t tokens = ids.size(0);
+            auto out = at::empty({tokens}, weights.options());
+            if (tokens == 0) return out;
+
+            constexpr int threads = 128;
+            const auto blocks = (tokens + threads - 1) / threads;
+            const auto stream = c10::cuda::getCurrentCUDAStream(ids.get_device());
+            route_weights_kernel<<<blocks, threads, 0, stream.stream()>>>(
+                ids.data_ptr<int32_t>(), weights.data_ptr<float>(),
+                out.data_ptr<float>(), tokens, ids.size(1), expert);
+            C10_CUDA_KERNEL_LAUNCH_CHECK();
+            return out;
+        }
+        '''
+        return load_inline(
+            name="starter_route_weights",
+            cpp_sources=cpp,
+            cuda_sources=cuda,
+            functions=["route_weights"],
+        )
+
+Build in prepare() so compilation finishes before graph capture. Launch on
+PyTorch's current stream so the kernel participates in capture. The output
+allocation and grid depend only on the input shape. Route IDs are read and
+compared on the GPU, and the launcher returns without synchronizing.
+
+From the repository root on Cayenne, check slurm-windows and run the eager
+and CUDA graph correctness tests with one GPU.
+
+    sbatch --partition=main --gres=gpu:1 --time=00:20:00 \\
+        --wrap='./run.sh submission.py --tests-only'
+
+PyTorch load_inline reference:
+https://docs.pytorch.org/docs/stable/cpp_extension.html
 """
 
 from __future__ import annotations
