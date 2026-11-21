@@ -163,29 +163,14 @@ clocks. Use `-k regex:<name>` to limit collection to your kernel.
 
 ## Deliverables
 
-1. **Notes on how to measure performance accurately.**
-   - What the judge measures, in your own words, and why it replays CUDA graphs and clears the L2 cache.
-   - The SGLang timings above, reproduced on your machine.
-   - A hand calculation of the 1-token floor, with a byte count for each input and output in the model.
-   - One naive timing of your own (a Python loop around the call) and why it disagrees with the judge.
-2. **Two checkpoints** along the optimization path. Each is a git tag whose `submission.py` passes every
+1. **Code and writeup for the two checkpoints**. Each is a git tag whose `submission.py` passes every
    test, and each tests a distinct optimization idea. Use at most one page per checkpoint to cover the following.
    - what changed;
    - why it is faster, in terms of what the hardware is doing;
    - one profiler number that moved, before and after;
    - what limits the kernel now, and how far it is from the theoretical limit;
    - which parts of the kernel you can explain line by line, and which you can't.
-3. **`UNKNOWNS.md`:** everything in the code or the profiler output that you do not understand. Be specific:
-   "I don't know why 8 warps per SM beat 16 here".
-4. **A 30-minute walkthrough** of your final kernel and your notes.
-
-## How to work
-
-- **It is fine not to understand a part.** Write it down in `UNKNOWNS.md`. The parts you do understand should
-  be solid enough to go through line by line. "I don't know; here is how I would find out" is a good answer.
-- **A kernel you can mostly explain beats a faster one you can't.** You choose how far to let the agent go.
-- **Consider noise in your profiling and do repeated measurements.**
-- **Questions about compute access or logistics:** any time.
+2. **A 30-minute in-person discussion** about your work and what you learned about GPU architecture.
 
 ## A suggested pace
 
@@ -196,16 +181,13 @@ clocks. Use `-k regex:<name>` to limit collection to your kernel.
 | 6–10 | Find what limits checkpoint 1 and improve it -> Checkpoint 2. |
 | 11-12 | Write-up |
 
-Adjust the schedule as you learn what limits the kernel.
-
-## What a good two weeks looks like
+## Goals
 
 Roughly in order of importance:
-
 1. **You understand your kernel.** You can walk through the kernel code at both checkpoints and explain what it does and what limits it,
    and you know where your understanding stops.
 2. **You learned how to profile kernels.**
-3. **You can characterize how agents approach hyperoptimizing kernels and have thoughts on their strengths and weaknesses.**
+3. **You can characterize how agents approach writing kernels and have thoughts on their strengths and weaknesses.**
 4. **The kernel got faster.**
 
 ## Questions about GPU architecture
